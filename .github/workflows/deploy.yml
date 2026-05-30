@@ -87,11 +87,20 @@ jobs:
             mkdir -p ~/app
             cd ~/app
             
-            # Crear archivo .env dinámicamente con las credenciales de los secrets
+            # 1. Configurar SWAP de 2GB para evitar que el Out-Of-Memory (OOM) Killer apague los backends en t2.micro (1GB RAM)
+            if [ ! -f /swapfile ]; then
+              sudo fallocate -l 2G /swapfile
+              sudo chmod 600 /swapfile
+              sudo mkswap /swapfile
+              sudo swapon /swapfile
+              echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+            fi
+            
+            # 2. Crear archivo .env dinámicamente con las credenciales de los secrets
             echo "DOCKER_USER=${{ secrets.DOCKER_USER }}" > .env
             echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
             
-            # Descargar las últimas imágenes compiladas de Docker Hub y levantar el entorno
+            # 3. Descargar las últimas imágenes compiladas de Docker Hub y levantar el entorno
             docker compose down -v --remove-orphans
             docker compose pull
             docker compose up -d
