@@ -13,12 +13,28 @@ provider "aws" {
 }
 
 # =========================================================================
-# 0. Obtener la VPC por defecto y Subred por defecto de forma universal
+# 0. Obtener la LabVPC y Subred Pública de AWS Academy de forma infalible
 # =========================================================================
-resource "aws_default_vpc" "default" {}
+# Buscar la VPC que NO es la por defecto (exclusivo de LabVPC en AWS Academy)
+data "aws_vpc" "selected" {
+  default = false
+}
 
-resource "aws_default_subnet" "default_az1" {
-  availability_zone = "${var.aws_region}a" # Ejemplo: us-east-1a
+# Buscar subredes públicas dentro de esa VPC (que tengan mapeo de IP pública activado)
+data "aws_subnets" "public" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.selected.id]
+  }
+  filter {
+    name   = "map-public-ip-on-launch"
+    values = ["true"]
+  }
+}
+
+# Seleccionar la primera subred pública encontrada
+data "aws_subnet" "selected" {
+  id = data.aws_subnets.public.ids[0]
 }
 
 # =========================================================================
@@ -45,7 +61,7 @@ data "aws_ami" "ubuntu" {
 resource "aws_security_group" "web_sg" {
   name        = "ep2-devops-security-group"
   description = "Grupo de seguridad creado por Terraform para la Evaluacion Parcial 2"
-  vpc_id      = aws_default_vpc.default.id
+  vpc_id      = data.aws_vpc.selected.id
 
   # Regla de entrada: SSH (Puerto 22) para permitir acceso SSH al pipeline y administradores
   ingress {
@@ -88,7 +104,8 @@ resource "aws_instance" "app_server" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.instance_type
   key_name      = var.key_name
-  subnet_id     = aws_default_subnet.default_az1.id
+  subnet_id     = data.aws_subnet.selected.id
+  associate_public_ip_address = true
 
   # Asociar el grupo de seguridad declarativo
   vpc_security_group_ids = [aws_security_group.web_sg.id]
