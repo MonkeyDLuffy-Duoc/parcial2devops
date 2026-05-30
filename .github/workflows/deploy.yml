@@ -92,7 +92,7 @@ jobs:
             echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
             
             # Descargar las últimas imágenes compiladas de Docker Hub y levantar el entorno
-            docker compose down --remove-orphans
+            docker compose down -v --remove-orphans
             docker compose pull
             docker compose up -d
             
