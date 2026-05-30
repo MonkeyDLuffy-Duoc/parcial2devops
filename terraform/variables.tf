@@ -13,7 +13,7 @@ variable "instance_type" {
 variable "key_name" {
   description = "Nombre de la clave SSH existente en tu cuenta de AWS (Key Pair) para conectarse por SSH"
   type        = string
-  default     = "isy1101-key" # Reemplaza con el nombre de tu Key Pair en la consola de AWS
+  default     = "vockey" # Clave predeterminada en AWS Academy. Reemplázala si creaste una personalizada.
 }
 
 variable "instance_name" {

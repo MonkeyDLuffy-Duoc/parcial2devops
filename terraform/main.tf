@@ -13,6 +13,15 @@ provider "aws" {
 }
 
 # =========================================================================
+# 0. Obtener la VPC por defecto y Subred por defecto de forma universal
+# =========================================================================
+resource "aws_default_vpc" "default" {}
+
+resource "aws_default_subnet" "default_az1" {
+  availability_zone = "${var.aws_region}a" # Ejemplo: us-east-1a
+}
+
+# =========================================================================
 # 1. Obtener la última AMI oficial de Ubuntu 22.04 LTS de forma dinámica
 # =========================================================================
 data "aws_ami" "ubuntu" {
@@ -36,6 +45,7 @@ data "aws_ami" "ubuntu" {
 resource "aws_security_group" "web_sg" {
   name        = "ep2-devops-security-group"
   description = "Grupo de seguridad creado por Terraform para la Evaluacion Parcial 2"
+  vpc_id      = aws_default_vpc.default.id
 
   # Regla de entrada: SSH (Puerto 22) para permitir acceso SSH al pipeline y administradores
   ingress {
@@ -78,6 +88,7 @@ resource "aws_instance" "app_server" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.instance_type
   key_name      = var.key_name
+  subnet_id     = aws_default_subnet.default_az1.id
 
   # Asociar el grupo de seguridad declarativo
   vpc_security_group_ids = [aws_security_group.web_sg.id]
