@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: mysql-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_master_pass}
+      # Usuario personalizado que usarán los microservicios
+      MYSQL_USER: citt_user
+      MYSQL_PASSWORD: ${DB_PASSWORD:-citt_secure_pass}
+    volumes:
+      # Persistencia de datos (Volumen Docker)
+      - mysql-data:/var/lib/mysql
+      # Script para inicializar automáticamente múltiples bases de datos
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    expose:
+      - "3306"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 5s
+      retries: 10
+      interval: 5s
+
+  back-ventas:
+    image: ${DOCKER_USER:-citt}/back-ventas:latest
+    build:
+      context: ./back-Ventas_SpringBoot/Springboot-API-REST
+      dockerfile: Dockerfile
+    container_name: back-ventas
+    restart: always
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://db:3306/ventas_db?useSSL=false&serverTimezone=UTC&createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=citt_user
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-citt_secure_pass}
+    expose:
+      - "8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  back-despachos:
+    image: ${DOCKER_USER:-citt}/back-despachos:latest
+    build:
+      context: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+      dockerfile: Dockerfile
+    container_name: back-despachos
+    restart: always
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://db:3306/despachos_db?useSSL=false&serverTimezone=UTC&createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=citt_user
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-citt_secure_pass}
+    expose:
+      - "8081"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  front-despacho:
+    image: ${DOCKER_USER:-citt}/front-despacho:latest
+    build:
+      context: ./front_despacho
+      dockerfile: Dockerfile
+    container_name: front-despacho
+    restart: always
+    ports:
+      # Exponer el puerto estándar HTTP (80) al exterior, mapeado al puerto seguro de Nginx (8080)
+      - "80:8080"
+    depends_on:
+      - back-ventas
+      - back-despachos
+    networks:
+      - app-network
+
+volumes:
+  # Volumen para persistencia de base de datos
+  mysql-data:
+
+networks:
+  # Red aislada para intercomunicación segura de servicios
+  app-network:
+    driver: bridge

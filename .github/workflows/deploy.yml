@@ -1,0 +1,103 @@
+name: CI/CD Pipeline - Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      # Se activa automáticamente al hacer push en la rama "deploy"
+      - deploy
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 1. Compilar y publicar imagen del Backend Ventas
+      - name: Build and Push Backend Ventas
+        uses: docker/build-push-action@v5
+        with:
+          context: ./back-Ventas_SpringBoot/Springboot-API-REST
+          file: ./back-Ventas_SpringBoot/Springboot-API-REST/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKER_USER }}/back-ventas:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 2. Compilar y publicar imagen del Backend Despachos
+      - name: Build and Push Backend Despachos
+        uses: docker/build-push-action@v5
+        with:
+          context: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+          file: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKER_USER }}/back-despachos:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 3. Compilar y publicar imagen del Frontend (Nginx + React)
+      - name: Build and Push Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./front_despacho
+          file: ./front_despacho/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKER_USER }}/front-despacho:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to AWS EC2 via SSH
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Copiar el docker-compose y el script sql a la carpeta del EC2
+      - name: Copy docker-compose.yml and init.sql to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "docker-compose.yml,init.sql"
+          target: "~/app"
+
+      # Conectarse por SSH para actualizar y correr los contenedores
+      - name: Deploy with Docker Compose on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            mkdir -p ~/app
+            cd ~/app
+            
+            # Crear archivo .env dinámicamente con las credenciales de los secrets
+            echo "DOCKER_USER=${{ secrets.DOCKER_USER }}" > .env
+            echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
+            
+            # Descargar las últimas imágenes compiladas de Docker Hub y levantar el entorno
+            docker compose down --remove-orphans
+            docker compose pull
+            docker compose up -d
+            
+            # Limpiar imágenes obsoletas colgadas para ahorrar almacenamiento en la EC2
+            docker image prune -f
+            
+            # Comprobar estado de los servicios
+            docker compose ps
