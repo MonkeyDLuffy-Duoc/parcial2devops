@@ -66,28 +66,19 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Copiar el docker-compose y el script sql a la carpeta del EC2
-      - name: Copy docker-compose.yml and init.sql to EC2
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "docker-compose.yml,init.sql"
-          target: "~/app"
-
-      # Conectarse por SSH para actualizar y correr los contenedores
+      # Paso único: copiar archivos y desplegar todo via SSH (sin SCP separado)
       - name: Deploy with Docker Compose on EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 10m
           script: |
             mkdir -p ~/app
             cd ~/app
-            
-            # 1. Configurar SWAP de 2GB para evitar que el Out-Of-Memory (OOM) Killer apague los backends en t2.micro (1GB RAM)
+
+            # 1. Configurar SWAP de 2GB para evitar OOM Killer en t2.micro (1GB RAM)
             if [ ! -f /swapfile ]; then
               sudo fallocate -l 2G /swapfile
               sudo chmod 600 /swapfile
@@ -95,18 +86,149 @@ jobs:
               sudo swapon /swapfile
               echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
             fi
-            
-            # 2. Crear archivo .env dinámicamente con las credenciales de los secrets
+
+            # 2. Escribir docker-compose.yml directamente via SSH (sin SCP)
+            cat > ~/app/docker-compose.yml << 'COMPOSE_EOF'
+            version: '3.8'
+
+            services:
+              db:
+                image: mysql:8.0
+                container_name: mysql-db
+                restart: always
+                environment:
+                  MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_master_pass}
+                  MYSQL_USER: citt_user
+                  MYSQL_PASSWORD: ${DB_PASSWORD:-citt_secure_pass}
+                volumes:
+                  - mysql-data:/var/lib/mysql
+                  - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+                expose:
+                  - "3306"
+                networks:
+                  - app-network
+                healthcheck:
+                  test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+                  timeout: 5s
+                  retries: 10
+                  interval: 5s
+
+              back-ventas:
+                image: ${DOCKER_USER:-citt}/back-ventas:latest
+                container_name: back-ventas
+                restart: always
+                environment:
+                  - SPRING_DATASOURCE_URL=jdbc:mysql://db:3306/ventas_db?useSSL=false&serverTimezone=UTC&createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true
+                  - SPRING_DATASOURCE_USERNAME=citt_user
+                  - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-citt_secure_pass}
+                expose:
+                  - "8080"
+                depends_on:
+                  db:
+                    condition: service_healthy
+                networks:
+                  - app-network
+
+              back-despachos:
+                image: ${DOCKER_USER:-citt}/back-despachos:latest
+                container_name: back-despachos
+                restart: always
+                environment:
+                  - SPRING_DATASOURCE_URL=jdbc:mysql://db:3306/despachos_db?useSSL=false&serverTimezone=UTC&createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true
+                  - SPRING_DATASOURCE_USERNAME=citt_user
+                  - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-citt_secure_pass}
+                expose:
+                  - "8081"
+                depends_on:
+                  db:
+                    condition: service_healthy
+                networks:
+                  - app-network
+
+              front-despacho:
+                image: ${DOCKER_USER:-citt}/front-despacho:latest
+                container_name: front-despacho
+                restart: always
+                ports:
+                  - "80:8080"
+                depends_on:
+                  - back-ventas
+                  - back-despachos
+                networks:
+                  - app-network
+
+            volumes:
+              mysql-data:
+
+            networks:
+              app-network:
+                driver: bridge
+            COMPOSE_EOF
+
+            # 3. Escribir init.sql directamente via SSH (sin SCP)
+            cat > ~/app/init.sql << 'SQL_EOF'
+            -- Crear las bases de datos independientes para cada microservicio
+            CREATE DATABASE IF NOT EXISTS ventas_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+            CREATE DATABASE IF NOT EXISTS despachos_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+            -- Garantizar que se puedan realizar operaciones
+            GRANT ALL PRIVILEGES ON ventas_db.* TO 'citt_user'@'%';
+            GRANT ALL PRIVILEGES ON despachos_db.* TO 'citt_user'@'%';
+            FLUSH PRIVILEGES;
+
+            -- ==========================================
+            -- Inicialización de datos semilla para Ventas
+            -- ==========================================
+            USE ventas_db;
+
+            CREATE TABLE IF NOT EXISTS `venta` (
+              `id_venta` bigint NOT NULL,
+              `despacho_generado` bit(1) NOT NULL,
+              `direccion_compra` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+              `fecha_compra` date NOT NULL,
+              `valor_compra` int NOT NULL,
+              PRIMARY KEY (`id_venta`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            CREATE TABLE IF NOT EXISTS `venta_seq` (
+              `next_val` bigint DEFAULT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            INSERT INTO `venta` (`id_venta`, `despacho_generado`, `direccion_compra`, `fecha_compra`, `valor_compra`)
+            VALUES
+            (1, 0, 'P Sherman Calle Wallabi 42 Sydney', '2024-02-02', 22990),
+            (2, 0, 'Avenida siempre viva 69', '2024-03-05', 12590),
+            (3, 0, 'Avenida Por atrás 1313', '2024-04-20', 13990),
+            (4, 0, 'Calle presidente kirby 8528', '2024-04-15', 9990)
+            ON DUPLICATE KEY UPDATE `id_venta` = `id_venta`;
+
+            INSERT INTO `venta_seq` (`next_val`)
+            SELECT 5 WHERE NOT EXISTS (SELECT 1 FROM `venta_seq`);
+
+            -- ==========================================
+            -- Inicialización de datos para Despachos
+            -- ==========================================
+            USE despachos_db;
+
+            CREATE TABLE IF NOT EXISTS `despacho_seq` (
+              `next_val` bigint DEFAULT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            INSERT INTO `despacho_seq` (`next_val`)
+            SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM `despacho_seq`);
+            SQL_EOF
+
+            # 4. Crear archivo .env con las credenciales de los secrets
             echo "DOCKER_USER=${{ secrets.DOCKER_USER }}" > .env
             echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
-            
-            # 3. Descargar las últimas imágenes compiladas de Docker Hub y levantar el entorno
+
+            # 5. Descargar imágenes y levantar el entorno limpio
             docker compose down -v --remove-orphans
             docker compose pull
             docker compose up -d
-            
-            # Limpiar imágenes obsoletas colgadas para ahorrar almacenamiento en la EC2
+
+            # Limpiar imágenes obsoletas
             docker image prune -f
-            
+
             # Comprobar estado de los servicios
             docker compose ps
